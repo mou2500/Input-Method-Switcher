@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">QuickGemini</string>
+    <string name="error_no_voice_handler">未找到语音命令处理程序，请确认已安装 Gemini 并将其设为默认助手</string>
+</resources>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+        完全透明、无标题、全屏的主题。
+        继承框架自带的 Translucent 主题，不依赖 AppCompat/Material，
+        因此 LauncherActivity 可以直接继承 android.app.Activity。
+    -->
+    <style name="Theme.QuickGemini.Transparent"
+           parent="android:Theme.Translucent.NoTitleBar.Fullscreen">
+        <!-- 不压暗下层（不出现半透明遮罩） -->
+        <item name="android:backgroundDimEnabled">false</item>
+        <!-- 去掉内容遮罩 -->
+        <item name="android:windowContentOverlay">@null</item>
+
+        <!--
+            Android 12+ (API 31) 系统闪屏：把背景设为透明。
+            实际上 windowIsTranslucent=true 的 Activity 系统会跳过闪屏，
+            这里再显式声明作双保险，避免任何 OEM 定制皮肤下出现纯色闪屏。
+        -->
+        <item name="android:windowSplashScreenBackground">@android:color/transparent</item>
+    </style>
+
+</resources>
