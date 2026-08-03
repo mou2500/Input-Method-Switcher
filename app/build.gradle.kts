@@ -33,6 +33,17 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    // 修改 APK 输出文件名
+    applicationVariants.all {
+        val variant = this
+        variant.outputs
+            .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
+            .forEach { output ->
+                val outputFileName = "QuickGemini-${variant.versionName}.apk"
+                output.outputFileName = outputFileName
+            }
+    }
 }
 
 dependencies {
