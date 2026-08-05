@@ -28,8 +28,29 @@ class LauncherActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Android 14+ 隐藏 API 限制会拦截 setInputMethod* 反射,
+        // 必须在首次反射前申请豁免,否则切换必然失败
+        trySetHiddenApiExemptions()
+
         // 等窗口就绪后弹出"更改键盘"列表
         Handler(Looper.getMainLooper()).postDelayed({ showImePicker() }, 300)
+    }
+
+    private fun trySetHiddenApiExemptions() {
+        try {
+            val clazz = Class.forName("dalvik.system.VMRuntime")
+            val getRuntime = clazz.getDeclaredMethod("getRuntime")
+            getRuntime.isAccessible = true
+            val runtime = getRuntime.invoke(null)
+            // 用 Class.forName 取 String[] 类型,避免 Array<String>::class.java 写法
+            val strArrayClass = Class.forName("[Ljava.lang.String;")
+            val setExemptions = clazz.getDeclaredMethod(
+                "setHiddenApiExemptions", strArrayClass)
+            setExemptions.isAccessible = true
+            setExemptions.invoke(runtime, arrayOf("L"))
+        } catch (e: Throwable) {
+            // 豁免失败不致命:切换失败时有兜底
+        }
     }
 
     private fun showImePicker() {
