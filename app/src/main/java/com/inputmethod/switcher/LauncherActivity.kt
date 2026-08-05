@@ -59,7 +59,12 @@ class LauncherActivity : Activity() {
             return
         }
 
-        val curId = try { imm.currentInputMethod } catch (e: Throwable) { null }
+        // getCurrentInputMethodId 是 @hide,不在编译 SDK 中,需反射
+        val curId = try {
+            InputMethodManager::class.java.getMethod("getCurrentInputMethodId").invoke(imm) as? String
+        } catch (e: Throwable) {
+            null
+        }
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("更改键盘")
