@@ -6,7 +6,7 @@
         继承框架自带的 Translucent 主题，不依赖 AppCompat/Material，
         因此 LauncherActivity 可以直接继承 android.app.Activity。
     -->
-    <style name="Theme.QuickGemini.Transparent"
+    <style name="Theme.InputMethodSwitcher.Transparent"
            parent="android:Theme.Translucent.NoTitleBar.Fullscreen">
         <!-- 不压暗下层（不出现半透明遮罩） -->
         <item name="android:backgroundDimEnabled">false</item>

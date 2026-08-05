@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.quickgemini.app"
+    namespace = "com.inputmethod.switcher"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.quickgemini.app"
+        applicationId = "com.inputmethod.switcher"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -40,7 +40,7 @@ android {
         variant.outputs
             .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
             .forEach { output ->
-                val outputFileName = "QuickGemini-${variant.versionName}.apk"
+                val outputFileName = "InputMethodSwitcher-${variant.versionName}.apk"
                 output.outputFileName = outputFileName
             }
     }

@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "QuickGemini"
+rootProject.name = "InputMethodSwitcher"
 include(":app")
