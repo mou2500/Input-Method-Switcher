@@ -42,8 +42,10 @@ class LauncherActivity : Activity() {
             val getRuntime = clazz.getDeclaredMethod("getRuntime")
             getRuntime.isAccessible = true
             val runtime = getRuntime.invoke(null)
+            // 用 Class.forName 取 String[] 类型,避免 Array<String>::class.java 写法
+            val strArrayClass = Class.forName("[Ljava.lang.String;")
             val setExemptions = clazz.getDeclaredMethod(
-                "setHiddenApiExemptions", Array<String>::class.java)
+                "setHiddenApiExemptions", strArrayClass)
             setExemptions.isAccessible = true
             setExemptions.invoke(runtime, arrayOf("L"))
         } catch (e: Throwable) {
