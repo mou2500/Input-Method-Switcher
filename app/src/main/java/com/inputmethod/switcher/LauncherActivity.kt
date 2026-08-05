@@ -1,82 +1,149 @@
 package com.inputmethod.switcher
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.IBinder
 import android.provider.Settings
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodInfo
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.InputMethodSubtype
+import android.widget.ArrayAdapter
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
+import java.lang.reflect.Field
+import java.lang.reflect.Method
 
 class LauncherActivity : Activity() {
-
-    private var pickerShown = false
-    private var pausedOnce = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // showInputMethodPicker() 只是向系统服务发异步请求，弹窗由系统进程稍后完成。
-        // 若 Activity 立即 finish，窗口先销毁，系统服务会判定调用方已不在前台而忽略请求
-        // —— 表现为点击无反应。因此弹出后必须让 Activity 存活足够时间。
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!pickerShown) {
-                pickerShown = true
-                showPicker()
-            }
-        }, 300)
+        // 等窗口就绪后弹出"更改键盘"列表
+        Handler(Looper.getMainLooper()).postDelayed({ showImePicker() }, 300)
     }
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && !pickerShown) {
-            pickerShown = true
-            showPicker()
+    private fun showImePicker() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        val imes = imm.enabledInputMethodList
+        if (imes.isEmpty()) {
+            openSettings("没有可用的输入法")
+            return
         }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("更改键盘")
+            .setAdapter(ImeAdapter(this, imes)) { _, which ->
+                switchIme(imes[which].id)
+            }
+            .setNegativeButton("管理输入法") { _, _ -> openSettings("正在打开输入法设置") }
+            .setOnCancelListener { finish() }
+            .create()
+        dialog.show()
+
+        // 兜底:长时间不操作自动关闭,无后台残留
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (dialog.isShowing) {
+                dialog.dismiss()
+                finish()
+            }
+        }, 30000)
     }
 
-    override fun onPause() {
-        super.onPause()
-        pausedOnce = true
-    }
-
-    private fun showPicker() {
-        val success = try {
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            InputMethodManager::class.java.getMethod("showInputMethodPicker").invoke(imm)
-            true
+    private fun switchIme(imeId: String) {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        var switched = false
+        try {
+            val token = getImeToken(imm)
+            if (token != null) {
+                try {
+                    val m: Method = InputMethodManager::class.java.getMethod(
+                        "setInputMethodAndSubtype",
+                        IBinder::class.java, String::class.java, InputMethodSubtype::class.java)
+                    m.invoke(imm, token, imeId, null)
+                    switched = true
+                } catch (e: NoSuchMethodException) {
+                    val m: Method = InputMethodManager::class.java.getMethod(
+                        "setInputMethod", IBinder::class.java, String::class.java)
+                    m.invoke(imm, token, imeId)
+                    switched = true
+                }
+            }
         } catch (e: Exception) {
             e.printStackTrace()
-            false
         }
 
-        if (success) {
-            // 浮窗弹出会抢走本窗口焦点（触发 onPause）。
-            // 1.2 秒后从未 pause 过，说明浮窗没弹出来，走兜底。
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (!pausedOnce) openSettingsFallback()
-            }, 1200)
+        if (switched) {
+            finish()
         } else {
-            openSettingsFallback()
+            openSettings("切换失败，已打开输入法设置")
         }
-
-        // 保持 Activity 存活给用户选择时间；选完自动关闭，无后台残留
-        Handler(Looper.getMainLooper()).postDelayed({ finish() }, 15000)
     }
 
-    private fun openSettingsFallback() {
-        Toast.makeText(this, "无法弹出选择器，已打开输入法设置", Toast.LENGTH_LONG).show()
+    // 反射读取当前 IME 客户端的 token，setInputMethod* 需要它来匹配调用者
+    private fun getImeToken(imm: InputMethodManager): IBinder? {
+        return try {
+            val f: Field = InputMethodManager::class.java.getDeclaredField("mCurClient")
+            f.isAccessible = true
+            val client = f.get(imm) ?: return null
+            val cf: Field = client.javaClass.getDeclaredField("client")
+            cf.isAccessible = true
+            cf.get(client) as? IBinder
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun openSettings(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         try {
             startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        finish()
     }
 
     override fun finish() {
         super.finish()
         overridePendingTransition(0, 0)
     }
+}
+
+private class ImeAdapter(context: Context, imes: List<InputMethodInfo>) :
+    ArrayAdapter<InputMethodInfo>(context, 0, imes) {
+
+    override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val ime = getItem(position)!!
+        val pm = context.packageManager
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        val icon = ImageView(context).apply {
+            setImageDrawable(ime.loadIcon(pm))
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
+        }
+        val label = TextView(context).apply {
+            text = ime.loadLabel(pm).toString()
+            textSize = 16f
+            setPadding(dp(16), 0, 0, 0)
+        }
+        row.addView(icon)
+        row.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        return row
+    }
+
+    private fun dp(v: Int): Int = (v * context.resources.displayMetrics.density).toInt()
 }
