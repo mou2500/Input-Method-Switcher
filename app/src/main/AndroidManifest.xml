@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 悬浮窗权限: 豁免 Android 10+ 后台启动 Activity 限制, 探针才能自动打开设置页 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

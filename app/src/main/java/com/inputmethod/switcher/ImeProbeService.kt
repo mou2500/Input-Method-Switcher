@@ -20,7 +20,7 @@ class ImeProbeService : AccessibilityService() {
     private var dumpCount = 0
 
     // 0=设置主页找"系统与更新"  1=系统与更新页找"输入法"
-    // 2=输入法页找"当前输入法"  3=完成(不再自动点击)
+    // 2=输入法页找"当前输入法"  3=完成(不再自动点击)  10=无悬浮窗权限, 等用户手动打开设置
     private var navState = 0
     private var lastWindowPkg = ""
     private var lastWindowCls = ""
@@ -29,12 +29,32 @@ class ImeProbeService : AccessibilityService() {
         super.onServiceConnected()
         LogStore.append("Probe", "=== 无障碍服务已连接 ===")
         saveLog("服务连接")
-        navState = 0
-        try {
-            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            LogStore.append("Probe", "已请求打开设置主页")
-        } catch (e: Exception) {
-            LogStore.append("Probe", "打开设置主页失败: $e")
+        if (Settings.canDrawOverlays(this)) {
+            navState = 0
+            try {
+                val intent = Intent(Settings.ACTION_SETTINGS)
+                    .setPackage("com.android.settings")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                LogStore.append("Probe", "已请求打开设置主页 (悬浮窗权限正常)")
+            } catch (e: Exception) {
+                LogStore.append("Probe", "打开设置主页失败: $e")
+                navState = 10
+            }
+        } else {
+            navState = 10
+            LogStore.append("Probe", "无悬浮窗权限(后台启动设置可能被拦截)")
+            try {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:$packageName")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                LogStore.append("Probe", "已打开悬浮窗授权页, 授权后请重新开关无障碍服务")
+            } catch (e: Exception) {
+                LogStore.append("Probe", "打开授权页失败: $e")
+            }
+            LogStore.append("Probe", "降级模式: 请手动打开 设置→系统与更新→输入法, 探针会帮你点击 当前输入法")
         }
     }
 
@@ -49,7 +69,7 @@ class ImeProbeService : AccessibilityService() {
                     lastWindowCls = cls
                     LogStore.append("Probe", "窗口切换: pkg=$pkg cls=$cls")
                     dumpTree("窗口($pkg/$cls)")
-                    if (pkg.contains("settings", true) && navState < 3) {
+                    if (pkg.contains("settings", true) && (navState < 3 || navState == 10)) {
                         autoNavigate()
                     }
                     saveLog("窗口切换")
@@ -95,14 +115,17 @@ class ImeProbeService : AccessibilityService() {
                     navState = 3
                 }
             }
-            2 -> {
-                // 输入法页: 找"当前输入法"行
+            2, 10 -> {
+                // 输入法页: 找"当前输入法"行 (手动模式 10 下, 任何 settings 页面都尝试,
+                // 只有真正含"当前输入法"行的页面才会命中, 不会误点)
                 if (findAndClick(listOf("当前输入法", "当前键盘", "默认键盘", "默认输入法"), listOf())) {
                     navState = 3
                     LogStore.append("Probe", "导航: 已点击 当前输入法, 浮窗应弹出!")
-                } else {
+                } else if (navState == 2) {
                     LogStore.append("Probe", "导航: 输入法页未找到 当前输入法 行")
                     navState = 3
+                } else {
+                    LogStore.append("Probe", "导航: 当前页面没有 当前输入法 行, 继续等待(手动模式)")
                 }
             }
             else -> {
