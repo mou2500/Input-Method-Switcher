@@ -29,6 +29,19 @@ class ImeProbeService : AccessibilityService() {
         super.onServiceConnected()
         LogStore.append("Probe", "=== 无障碍服务已连接 ===")
         saveLog("服务连接")
+        navigateNow()
+    }
+
+    // 点击应用图标 → LauncherActivity 发来指令 → 立即重新导航
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_NAVIGATE) {
+            LogStore.append("Probe", "=== 收到导航指令(点击图标触发) ===")
+            navigateNow()
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun navigateNow() {
         if (Settings.canDrawOverlays(this)) {
             navState = 0
             try {
@@ -42,20 +55,29 @@ class ImeProbeService : AccessibilityService() {
                 navState = 10
             }
         } else {
+            // 无悬浮窗权限: 先试直接打开(部分 ROM 无障碍服务可豁免后台启动限制), 失败再引导授权
             navState = 10
-            LogStore.append("Probe", "无悬浮窗权限(后台启动设置可能被拦截)")
             try {
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    android.net.Uri.parse("package:$packageName")
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                val intent = Intent(Settings.ACTION_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-                LogStore.append("Probe", "已打开悬浮窗授权页, 授权后请重新开关无障碍服务")
+                LogStore.append("Probe", "无悬浮窗权限, 尝试直接打开设置主页")
             } catch (e: Exception) {
-                LogStore.append("Probe", "打开授权页失败: $e")
+                LogStore.append("Probe", "无悬浮窗权限, 后台启动设置被拦截: $e")
+                try {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:$packageName")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    LogStore.append("Probe", "已打开悬浮窗授权页, 授权后请重新点击应用图标")
+                } catch (e2: Exception) {
+                    LogStore.append("Probe", "打开授权页失败: $e2")
+                }
+                LogStore.append("Probe", "降级模式: 请手动打开 设置→系统与更新→输入法, 探针会帮你点击 当前输入法")
             }
-            LogStore.append("Probe", "降级模式: 请手动打开 设置→系统与更新→输入法, 探针会帮你点击 当前输入法")
         }
+        saveLog("导航触发")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -247,5 +269,9 @@ class ImeProbeService : AccessibilityService() {
 
     override fun onInterrupt() {
         LogStore.append("Probe", "服务被中断")
+    }
+
+    companion object {
+        const val ACTION_NAVIGATE = "com.inputmethod.switcher.NAVIGATE"
     }
 }
