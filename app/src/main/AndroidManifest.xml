@@ -24,7 +24,7 @@
         </activity>
 
         <service
-            android:name=".ImeProbeService"
+            android:name=".ImeSwitchService"
             android:exported="true"
             android:label="@string/accessibility_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
