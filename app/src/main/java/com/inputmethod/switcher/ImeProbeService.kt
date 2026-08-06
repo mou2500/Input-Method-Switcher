@@ -11,22 +11,30 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.io.File
 
-// 无障碍探针: 打开输入法设置页, dump 页面节点树(每行的 view id / 文本 / 可点击性),
-// 自动把日志写入手机"下载"目录 (ime_probe_log.txt), 无需 adb。
+// 无障碍探针 + 自动导航:
+// 1) 打开设置主页, 自动点击 系统与更新 -> 输入法 -> 当前输入法, 触发系统"更改键盘"浮窗
+// 2) dump 每一步的界面树, 日志覆盖写入手机"下载"目录 (ime_probe_log.txt)
+// ColorOS 拒绝第三方 app 调 showInputMethodPicker(), 但无障碍模拟点击等同用户操作, 系统不拦截
 class ImeProbeService : AccessibilityService() {
 
     private var dumpCount = 0
 
+    // 0=设置主页找"系统与更新"  1=系统与更新页找"输入法"
+    // 2=输入法页找"当前输入法"  3=完成(不再自动点击)
+    private var navState = 0
+    private var lastWindowPkg = ""
+    private var lastWindowCls = ""
+
     override fun onServiceConnected() {
         super.onServiceConnected()
-        LogStore.append("Probe", "=== 无障碍服务已连接, 包名: ${packageName} ===")
+        LogStore.append("Probe", "=== 无障碍服务已连接 ===")
         saveLog("服务连接")
+        navState = 0
         try {
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            LogStore.append("Probe", "已请求打开输入法设置页")
+            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            LogStore.append("Probe", "已请求打开设置主页")
         } catch (e: Exception) {
-            LogStore.append("Probe", "打开设置页失败: $e")
+            LogStore.append("Probe", "打开设置主页失败: $e")
         }
     }
 
@@ -36,27 +44,118 @@ class ImeProbeService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 val pkg = event.packageName?.toString() ?: "?"
                 val cls = event.className?.toString() ?: "?"
-                LogStore.append("Probe", "窗口切换: pkg=$pkg cls=$cls")
-                dumpTree("窗口($pkg/$cls)")
-                saveLog("窗口切换")
+                if (pkg != lastWindowPkg || cls != lastWindowCls) {
+                    lastWindowPkg = pkg
+                    lastWindowCls = cls
+                    LogStore.append("Probe", "窗口切换: pkg=$pkg cls=$cls")
+                    dumpTree("窗口($pkg/$cls)")
+                    if (pkg.contains("settings", true) && navState < 3) {
+                        autoNavigate()
+                    }
+                    saveLog("窗口切换")
+                }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 val pkg = event.packageName?.toString() ?: ""
                 val low = pkg.lowercase()
-                // 只分析输入法/设置相关页面, 避免刷屏
-                if (low.contains("settings") || low.contains("inputmethod") ||
-                    low.contains("oplus") || low.contains("coloros")
-                ) {
-                    val cls = event.className?.toString() ?: "?"
+                if (low.contains("settings") || low.contains("oplus") || low.contains("coloros")) {
                     val node = event.source
                     if (node != null && node.childCount > 0) {
-                        LogStore.append("Probe", "内容变化: pkg=$pkg cls=$cls")
                         dumpTree("内容变化($pkg)")
                         node.recycle()
                     }
                 }
             }
         }
+    }
+
+    private fun autoNavigate() {
+        when (navState) {
+            0 -> {
+                // 设置主页: 优先"系统与更新", 其次直接的"输入法"入口
+                val clicked = findAndClick(listOf("系统与更新"), listOf())
+                if (clicked) {
+                    navState = 1
+                    LogStore.append("Probe", "导航: 已点击 系统与更新, 等待页面")
+                } else if (findAndClick(listOf(), listOf("输入法", "语言和输入法"))) {
+                    navState = 2
+                    LogStore.append("Probe", "导航: 已点击 输入法 入口, 等待页面")
+                } else {
+                    LogStore.append("Probe", "导航: 设置主页未找到 系统与更新/输入法, 请手动导航(仍会记录)")
+                    navState = 3
+                }
+            }
+            1 -> {
+                // 系统与更新页: 找"输入法"行
+                if (findAndClick(listOf(), listOf("输入法", "语言和输入法"))) {
+                    navState = 2
+                    LogStore.append("Probe", "导航: 已点击 输入法, 等待页面")
+                } else {
+                    LogStore.append("Probe", "导航: 系统与更新页未找到 输入法 行")
+                    navState = 3
+                }
+            }
+            2 -> {
+                // 输入法页: 找"当前输入法"行
+                if (findAndClick(listOf("当前输入法", "当前键盘", "默认键盘", "默认输入法"), listOf())) {
+                    navState = 3
+                    LogStore.append("Probe", "导航: 已点击 当前输入法, 浮窗应弹出!")
+                } else {
+                    LogStore.append("Probe", "导航: 输入法页未找到 当前输入法 行")
+                    navState = 3
+                }
+            }
+            else -> {
+            }
+        }
+    }
+
+    private fun findAndClick(exact: List<String>, contains: List<String>): Boolean {
+        val root = rootInActiveWindow ?: return false
+        return findClickableNode(root, exact, contains)
+    }
+
+    private fun findClickableNode(
+        node: AccessibilityNodeInfo,
+        exact: List<String>,
+        contains: List<String>
+    ): Boolean {
+        val text = node.text?.toString() ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+        val avoid = text.contains("管理") || desc.contains("管理")
+        var matched = false
+        for (p in exact) {
+            if (text == p || desc == p) {
+                matched = true
+                break
+            }
+        }
+        if (!matched) {
+            for (p in contains) {
+                if ((text.contains(p) || desc.contains(p)) && !avoid) {
+                    matched = true
+                    break
+                }
+            }
+        }
+        if (matched) {
+            var n: AccessibilityNodeInfo? = node
+            while (n != null) {
+                if (n.isClickable) {
+                    LogStore.append("Probe", "导航: 命中 '$text' (${n.className}), 执行点击")
+                    val ok = n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    LogStore.append("Probe", "导航: 点击结果=$ok")
+                    return ok
+                }
+                n = n.parent
+            }
+        }
+        val count = node.childCount
+        for (i in 0 until count) {
+            val child = node.getChild(i) ?: continue
+            if (findClickableNode(child, exact, contains)) return true
+        }
+        return false
     }
 
     private fun dumpTree(reason: String) {
@@ -91,31 +190,31 @@ class ImeProbeService : AccessibilityService() {
         }
     }
 
+    // 覆盖写入固定文件名, 避免同名文件堆积
     private fun saveLog(reason: String) {
         try {
             val filename = "ime_probe_log.txt"
             val data = LogStore.content().toByteArray()
-            val uri: android.net.Uri?
             if (Build.VERSION.SDK_INT >= 29) {
+                val resolver = contentResolver
+                resolver.delete(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                    arrayOf(filename))
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
                     put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
                     put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 }
-                uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 if (uri != null) {
-                    contentResolver.openOutputStream(uri)?.use { out ->
+                    resolver.openOutputStream(uri)?.use { out ->
                         out.write(data)
                     }
                 }
             } else {
-                val dir = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "ImeProbe")
-                if (dir.exists() || dir.mkdirs()) {
-                    File(dir, filename).writeBytes(data)
-                }
-                uri = null
+                val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return
+                File(dir, filename).writeBytes(data)
             }
             LogStore.append("Probe", "日志已写入 下载/$filename (原因: $reason)")
         } catch (e: Exception) {
