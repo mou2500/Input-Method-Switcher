@@ -2,6 +2,8 @@ package com.inputmethod.switcher
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -18,8 +20,18 @@ class ImeProbeService : AccessibilityService() {
 
     private var stage = Stage.IDLE
     private var scrollCount = 0
-    private var lastScrollTime = 0L
     private var lastWindowKey = ""
+    private val handler = Handler(Looper.getMainLooper())
+
+    /** 滚动后定时重试，不依赖系统事件（ColorOS 自动滚动不触发 content changed） */
+    private val retryScroll = object : Runnable {
+        override fun run() {
+            rootInActiveWindow?.let { advance(it) }
+        }
+    }
+
+    /** 浮窗渲染完成后枚举全部窗口 */
+    private val dumpWindowsLater = Runnable { dumpAllWindows() }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -31,8 +43,9 @@ class ImeProbeService : AccessibilityService() {
             LogStore.log("[SERVICE] 收到导航指令")
             stage = Stage.WAIT_HOME
             scrollCount = 0
-            lastScrollTime = 0L
             lastWindowKey = ""
+            handler.removeCallbacks(retryScroll)
+            handler.post(retryScroll)
         }
         return START_NOT_STICKY
     }
@@ -50,10 +63,14 @@ class ImeProbeService : AccessibilityService() {
                     lastWindowKey = key
                     LogStore.log("[WINDOW] 新窗口: $key")
                     dumpTree(root)
+                    // 切到新页面后重新开始滚动计数
+                    if (pkg.contains("settings", ignoreCase = true)) {
+                        scrollCount = 0
+                    }
                 }
                 advance(root)
             }
-            // 滚动后的内容变化事件：继续检查目标是否已滚入视野
+            // 内容变化事件：目标行可能已滚入/加载出来
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 if (event.packageName?.toString()?.contains("settings", ignoreCase = true) == true) {
                     advance(root)
@@ -68,30 +85,37 @@ class ImeProbeService : AccessibilityService() {
             Stage.WAIT_SUB -> tryClick(root, "输入法", Stage.WAIT_IME_PAGE, maxScrolls = 8)
             Stage.WAIT_IME_PAGE -> tryClick(root, "当前输入法", Stage.WAIT_PICKER, maxScrolls = 8)
             Stage.WAIT_PICKER -> {
-                LogStore.log("[PICKER] 浮窗窗口已出现，其完整内容已 dump 在上方 [WINDOW] 日志中")
+                handler.removeCallbacks(retryScroll)
+                LogStore.log("[PICKER] 浮窗出现，1.5 秒后枚举全部窗口")
+                handler.removeCallbacks(dumpWindowsLater)
+                handler.postDelayed(dumpWindowsLater, 1500)
                 stage = Stage.DONE
             }
             else -> {}
         }
     }
 
-    /** 找目标 → 点击；找不到 → 滚动一屏等下次事件；滚动超限 → 停在该窗口 */
+    /** 找目标 → 点击；找不到 → 滚动一屏并定时重试；滚动超限 → 停在该窗口 */
     private fun tryClick(root: AccessibilityNodeInfo, label: String, next: Stage, maxScrolls: Int) {
         if (clickTarget(root, label)) {
             scrollCount = 0
             stage = next
+            handler.removeCallbacks(retryScroll)
+            handler.postDelayed(retryScroll, 800)
             return
         }
-        val now = System.currentTimeMillis()
-        if (scrollCount < maxScrolls && now - lastScrollTime > 800) {
-            scrollCount++
-            lastScrollTime = now
-            scrollForward()
-            LogStore.log("[SCROLL] 第 ${scrollCount}/$maxScrolls 次滚动，继续找「$label」")
-        } else if (scrollCount >= maxScrolls) {
+        if (scrollCount >= maxScrolls) {
             LogStore.log("[MISS] 滚动 $maxScrolls 次仍找不到「$label」，停在当前窗口等待")
             stage = Stage.IDLE
+            handler.removeCallbacks(retryScroll)
+            return
         }
+        scrollCount++
+        scrollForward()
+        LogStore.log("[SCROLL] 第 $scrollCount/$maxScrolls 次滚动，继续找「$label」")
+        // 定时重试：滚动完成后主动再找，不依赖系统事件
+        handler.removeCallbacks(retryScroll)
+        handler.postDelayed(retryScroll, 1200)
     }
 
     /** 精确匹配优先，其次包含匹配；返回并点击可点击节点 */
@@ -140,10 +164,53 @@ class ImeProbeService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         val list = findScrollable(root)
         if (list != null) {
-            list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            LogStore.log("[SCROLL] 滚动容器: ${list.className} id=${list.viewIdResourceName}")
+            val ok = list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            LogStore.log("[SCROLL] 滚动执行结果: $ok")
         } else {
             LogStore.log("[SCROLL] 窗口内无滚动容器，无法滚动")
         }
+    }
+
+    /** 枚举全部窗口并 dump 文本节点——用于捕获系统"更改键盘"浮窗的组件信息 */
+    private fun dumpAllWindows() {
+        val sb = StringBuilder()
+        var windowIndex = 0
+        try {
+            for (w in windows) {
+                windowIndex++
+                val root = w.root ?: continue
+                val title = w.title?.toString() ?: ""
+                sb.append("窗口#$windowIndex: pkg=${root.packageName} type=${w.type} title=$title\n")
+                val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+                queue.add(Pair(root, 0))
+                var count = 0
+                while (queue.isNotEmpty()) {
+                    val (n, depth) = queue.removeFirst()
+                    if (depth > 14) continue
+                    val text = n.text?.toString() ?: ""
+                    val desc = n.contentDescription?.toString() ?: ""
+                    val vid = n.viewIdResourceName ?: ""
+                    if (text.isNotBlank() || desc.isNotBlank()) {
+                        val indent = "  ".repeat(depth)
+                        sb.append("$indent${n.className}")
+                        if (vid.isNotEmpty()) sb.append(" id=$vid")
+                        if (text.isNotBlank()) sb.append(" text=$text")
+                        if (desc.isNotBlank()) sb.append(" desc=$desc")
+                        if (n.isClickable) sb.append(" [可点击]")
+                        sb.append("\n")
+                        count++
+                    }
+                    for (i in 0 until n.childCount) {
+                        n.getChild(i)?.let { queue.add(Pair(it, depth + 1)) }
+                    }
+                }
+                sb.append("  (节点数 $count)\n")
+            }
+        } catch (e: Exception) {
+            sb.append("枚举窗口异常: $e\n")
+        }
+        LogStore.log("[WINDOWS] 共 $windowIndex 个窗口:\n${sb.trimEnd()}")
     }
 
     private fun findScrollable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
