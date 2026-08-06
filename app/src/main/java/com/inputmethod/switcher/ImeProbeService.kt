@@ -109,7 +109,7 @@ class ImeProbeService : AccessibilityService() {
         if (list != null) {
             list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         } else {
-            performGlobalAction(GLOBAL_ACTION_SCROLL_FORWARD)
+            performGlobalAction(AccessibilityService.GLOBAL_ACTION_SCROLL_FORWARD)
         }
     }
 
