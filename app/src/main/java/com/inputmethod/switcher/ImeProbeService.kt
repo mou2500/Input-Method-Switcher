@@ -10,14 +10,15 @@ import android.view.accessibility.AccessibilityNodeInfo
  * 触发系统"更改键盘"浮窗。每一步窗口内容全部 dump 进日志。
  *
  * 设计原则：不主动 startActivity（后台启动会被 ColorOS 拦截），
- * 设置主页由 LauncherActivity 前台打开；本服务只监听窗口、点击目标行。
+ * 设置主页由 LauncherActivity 前台打开；本服务只监听窗口、滚动、点击目标行。
  */
 class ImeProbeService : AccessibilityService() {
 
     private enum class Stage { IDLE, WAIT_HOME, WAIT_SUB, WAIT_IME_PAGE, WAIT_PICKER, DONE }
 
     private var stage = Stage.IDLE
-    private var scrollAttempts = 0
+    private var scrollCount = 0
+    private var lastScrollTime = 0L
     private var lastWindowKey = ""
 
     override fun onServiceConnected() {
@@ -29,50 +30,43 @@ class ImeProbeService : AccessibilityService() {
         if (intent?.action == ACTION_NAVIGATE) {
             LogStore.log("[SERVICE] 收到导航指令")
             stage = Stage.WAIT_HOME
-            scrollAttempts = 0
+            scrollCount = 0
+            lastScrollTime = 0L
+            lastWindowKey = ""
         }
         return START_NOT_STICKY
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (stage == Stage.IDLE || stage == Stage.DONE) return
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-
         val root = rootInActiveWindow ?: return
-        val pkg = event.packageName?.toString() ?: "?"
-        val cls = event.className?.toString() ?: "?"
-        val key = "$pkg/$cls"
-        if (key != lastWindowKey) {
-            lastWindowKey = key
-            LogStore.log("[WINDOW] 新窗口: $key")
-            dumpTree(root)
-        }
 
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                val pkg = event.packageName?.toString() ?: "?"
+                val cls = event.className?.toString() ?: "?"
+                val key = "$pkg/$cls"
+                if (key != lastWindowKey) {
+                    lastWindowKey = key
+                    LogStore.log("[WINDOW] 新窗口: $key")
+                    dumpTree(root)
+                }
+                advance(root)
+            }
+            // 滚动后的内容变化事件：继续检查目标是否已滚入视野
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                if (event.packageName?.toString()?.contains("settings", ignoreCase = true) == true) {
+                    advance(root)
+                }
+            }
+        }
+    }
+
+    private fun advance(root: AccessibilityNodeInfo) {
         when (stage) {
-            Stage.WAIT_HOME -> {
-                if (clickTarget(root, "系统与更新")) {
-                    stage = Stage.WAIT_SUB
-                } else {
-                    scrollOrGiveUp("系统与更新", Stage.WAIT_SUB)
-                }
-            }
-            Stage.WAIT_SUB -> {
-                if (clickTarget(root, "输入法")) {
-                    stage = Stage.WAIT_IME_PAGE
-                } else {
-                    LogStore.log("[MISS] 未找到「输入法」，停在当前窗口等待")
-                    stage = Stage.IDLE
-                }
-            }
-            Stage.WAIT_IME_PAGE -> {
-                if (clickTarget(root, "当前输入法")) {
-                    stage = Stage.WAIT_PICKER
-                    LogStore.log("[CLICK] 已点击「当前输入法」，等待浮窗…")
-                } else {
-                    LogStore.log("[MISS] 未找到「当前输入法」，停在当前窗口等待")
-                    stage = Stage.IDLE
-                }
-            }
+            Stage.WAIT_HOME -> tryClick(root, "系统与更新", Stage.WAIT_SUB, maxScrolls = 12)
+            Stage.WAIT_SUB -> tryClick(root, "输入法", Stage.WAIT_IME_PAGE, maxScrolls = 8)
+            Stage.WAIT_IME_PAGE -> tryClick(root, "当前输入法", Stage.WAIT_PICKER, maxScrolls = 8)
             Stage.WAIT_PICKER -> {
                 LogStore.log("[PICKER] 浮窗窗口已出现，其完整内容已 dump 在上方 [WINDOW] 日志中")
                 stage = Stage.DONE
@@ -81,25 +75,64 @@ class ImeProbeService : AccessibilityService() {
         }
     }
 
-    /** 在窗口树中找目标文本的可点击节点并点击；返回是否命中 */
+    /** 找目标 → 点击；找不到 → 滚动一屏等下次事件；滚动超限 → 停在该窗口 */
+    private fun tryClick(root: AccessibilityNodeInfo, label: String, next: Stage, maxScrolls: Int) {
+        if (clickTarget(root, label)) {
+            scrollCount = 0
+            stage = next
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (scrollCount < maxScrolls && now - lastScrollTime > 800) {
+            scrollCount++
+            lastScrollTime = now
+            scrollForward()
+            LogStore.log("[SCROLL] 第 ${scrollCount}/$maxScrolls 次滚动，继续找「$label」")
+        } else if (scrollCount >= maxScrolls) {
+            LogStore.log("[MISS] 滚动 $maxScrolls 次仍找不到「$label」，停在当前窗口等待")
+            stage = Stage.IDLE
+        }
+    }
+
+    /** 精确匹配优先，其次包含匹配；返回并点击可点击节点 */
     private fun clickTarget(root: AccessibilityNodeInfo, label: String): Boolean {
-        val node = findClickableByText(root, label) ?: return false
+        val exact = findNodeByText(root, label, exact = true)
+        val node = exact ?: findNodeByText(root, label, exact = false) ?: return false
         val text = node.text?.toString() ?: label
-        LogStore.log("[CLICK] 命中「$text」，执行点击")
+        LogStore.log("[CLICK] 命中「$text」（${node.className}），执行点击")
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         LogStore.log("[CLICK] 点击结果: $ok")
         return ok
     }
 
-    /** 未找到目标：滚动一屏再找一次，仍无则记录 MISS 并停在该窗口 */
-    private fun scrollOrGiveUp(label: String, next: Stage) {
-        if (scrollAttempts < 2) {
-            scrollAttempts++
-            LogStore.log("[SCROLL] 未找到「$label」，滚动列表（第 ${scrollAttempts} 次）")
-            scrollForward()
-        } else {
-            LogStore.log("[MISS] 滚动两次仍找不到「$label」，停在当前窗口等待用户操作")
-            stage = Stage.IDLE
+    private fun findNodeByText(root: AccessibilityNodeInfo, label: String, exact: Boolean): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val n = queue.removeFirst()
+            if (!n.isVisibleToUser) {
+                enqueueChildren(queue, n)
+                continue
+            }
+            val text = n.text?.toString() ?: ""
+            val desc = n.contentDescription?.toString() ?: ""
+            val hit = if (exact) (text == label || desc == label) else (text.contains(label) || desc.contains(label))
+            if (hit) {
+                var node: AccessibilityNodeInfo? = n
+                while (node != null) {
+                    if (node.isClickable) return node
+                    node = node.parent
+                }
+                return n
+            }
+            enqueueChildren(queue, n)
+        }
+        return null
+    }
+
+    private fun enqueueChildren(queue: ArrayDeque<AccessibilityNodeInfo>, n: AccessibilityNodeInfo) {
+        for (i in 0 until n.childCount) {
+            n.getChild(i)?.let { queue.add(it) }
         }
     }
 
@@ -118,29 +151,7 @@ class ImeProbeService : AccessibilityService() {
         queue.add(root)
         while (queue.isNotEmpty()) {
             val n = queue.removeFirst()
-            if (n.isScrollable && n.isVisibleToUser) return n
-            for (i in 0 until n.childCount) {
-                n.getChild(i)?.let { queue.add(it) }
-            }
-        }
-        return null
-    }
-
-    private fun findClickableByText(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        while (queue.isNotEmpty()) {
-            val n = queue.removeFirst()
-            val text = n.text?.toString() ?: ""
-            val desc = n.contentDescription?.toString() ?: ""
-            if (n.isVisibleToUser && (text.contains(label) || desc.contains(label))) {
-                var node: AccessibilityNodeInfo? = n
-                while (node != null) {
-                    if (node.isClickable) return node
-                    node = node.parent
-                }
-                return n
-            }
+            if (n.isScrollable) return n
             for (i in 0 until n.childCount) {
                 n.getChild(i)?.let { queue.add(it) }
             }

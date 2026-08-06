@@ -12,54 +12,64 @@ import java.util.Locale
 
 /**
  * 日志落盘：写入公共下载目录，固定文件名，每次启动覆盖。
- * 用户通过 文件管理 → 下载 → ime_probe_log.txt 即可取到。
+ *
+ * 关键设计：持有 insert 返回的 uri 直接写入，不在 log 时查询 MediaStore
+ * （ColorOS 上刚写入的文件条目处于 pending 状态，查询会落空导致日志丢失）。
+ * uri 失效时自动重新创建，保证日志永不丢失。
  */
 object LogStore {
 
     private const val FILE_NAME = "ime_probe_log.txt"
     private var app: Context? = null
+    private var currentUri: Uri? = null
 
     fun init(context: Context) {
         app = context.applicationContext
         deleteOldFiles()
-        val uri = insertNewFile()
-        if (uri != null) {
-            write(uri, "===== IME 探针日志 =====\n")
-            log("日志文件已创建: $FILE_NAME")
+        currentUri = insertNewFile()
+        if (currentUri != null) {
+            write(currentUri!!, "===== IME 探针日志 =====\n")
         } else {
             Log.e("LogStore", "创建日志文件失败")
         }
     }
 
     fun log(line: String) {
-        val c = app ?: return
-        val resolver = c.contentResolver
-        val id = findFileId(resolver) ?: run {
-            Log.e("LogStore", "日志文件不存在，跳过: $line")
-            return
+        var uri = currentUri
+        if (uri == null) {
+            uri = insertNewFile()
+            currentUri = uri
         }
-        val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
-        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-        write(uri, "[$time] $line\n")
+        if (uri != null) {
+            val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+            write(uri, "[$time] $line\n")
+        } else {
+            Log.e("LogStore", "日志写入失败(无文件): $line")
+        }
     }
 
+    /** 删除所有同名旧文件，避免堆积（尽力而为，失败不影响后续写入） */
     private fun deleteOldFiles() {
         val c = app ?: return
         val resolver = c.contentResolver
-        resolver.query(
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Downloads._ID),
-            "${MediaStore.Downloads.DISPLAY_NAME} = ?",
-            arrayOf(FILE_NAME), null
-        )?.use { cur ->
-            while (cur.moveToNext()) {
-                val id = cur.getLong(0)
-                resolver.delete(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                    "${MediaStore.Downloads._ID} = ?",
-                    arrayOf(id.toString())
-                )
+        try {
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME} = ?",
+                arrayOf(FILE_NAME), null
+            )?.use { cur ->
+                while (cur.moveToNext()) {
+                    val id = cur.getLong(0)
+                    resolver.delete(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        "${MediaStore.Downloads._ID} = ?",
+                        arrayOf(id.toString())
+                    )
+                }
             }
+        } catch (e: Exception) {
+            Log.e("LogStore", "清理旧文件失败: ${e.message}")
         }
     }
 
@@ -70,20 +80,12 @@ object LogStore {
             put(MediaStore.Downloads.MIME_TYPE, "text/plain")
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
         }
-        return c.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-    }
-
-    private fun findFileId(resolver: android.content.ContentResolver): String? {
-        var id: String? = null
-        resolver.query(
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Downloads._ID),
-            "${MediaStore.Downloads.DISPLAY_NAME} = ?",
-            arrayOf(FILE_NAME), null
-        )?.use { cur ->
-            if (cur.moveToFirst()) id = cur.getLong(0).toString()
+        return try {
+            c.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        } catch (e: Exception) {
+            Log.e("LogStore", "创建日志文件异常: ${e.message}")
+            null
         }
-        return id
     }
 
     private fun write(uri: Uri, content: String) {
@@ -94,7 +96,8 @@ object LogStore {
                 out.flush()
             }
         } catch (e: Exception) {
-            Log.e("LogStore", "写入失败: ${e.message}")
+            Log.e("LogStore", "写入失败，重置文件: ${e.message}")
+            currentUri = null
         }
     }
 }
