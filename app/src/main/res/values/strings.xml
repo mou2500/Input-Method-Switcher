@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">输入法切换器</string>
-    <string name="accessibility_service_description">分析输入法设置界面并自动生成日志文件，保存到手机"下载"目录（ime_probe_log.txt）。</string>
+    <string name="accessibility_label">输入法切换器(界面探针)</string>
+    <string name="accessibility_service_description">自动导航到输入法设置页（系统与更新→输入法→当前输入法），记录每一步的界面内容，日志保存到手机"下载"目录（ime_probe_log.txt）。</string>
 </resources>
