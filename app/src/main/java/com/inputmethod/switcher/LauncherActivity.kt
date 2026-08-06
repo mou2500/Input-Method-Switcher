@@ -2,8 +2,11 @@ package com.inputmethod.switcher
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -82,32 +85,96 @@ class LauncherActivity : Activity() {
 
     private fun switchIme(imeId: String) {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        var switched = false
-        try {
-            val token = getImeToken(imm)
-            if (token != null) {
-                try {
-                    val m: Method = InputMethodManager::class.java.getMethod(
-                        "setInputMethodAndSubtype",
-                        IBinder::class.java, String::class.java, InputMethodSubtype::class.java)
-                    m.invoke(imm, token, imeId, null)
-                    switched = true
-                } catch (e: NoSuchMethodException) {
-                    val m: Method = InputMethodManager::class.java.getMethod(
-                        "setInputMethod", IBinder::class.java, String::class.java)
-                    m.invoke(imm, token, imeId)
-                    switched = true
+
+        // 策略1: 反射切换(部分 ROM 可用)
+        val token = getImeToken(imm)
+        if (token != null && tryReflectionSwitch(imm, token, imeId)) {
+            // 反射调用结果不一定立即生效,延迟确认
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (currentImeId(imm) != imeId) {
+                    trySecureOrGuide(imeId)
+                } else {
+                    finish()
                 }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            }, 500)
+            return
         }
 
-        if (switched) {
-            finish()
-        } else {
-            openSettings("切换失败，已打开输入法设置")
+        // 策略2: 写 Settings.Secure(需 adb 一次性授权), 策略3: 引导授权
+        trySecureOrGuide(imeId)
+    }
+
+    private fun tryReflectionSwitch(imm: InputMethodManager, token: IBinder, imeId: String): Boolean {
+        try {
+            try {
+                val m: Method = InputMethodManager::class.java.getMethod(
+                    "setInputMethodAndSubtype",
+                    IBinder::class.java, String::class.java, InputMethodSubtype::class.java)
+                m.invoke(imm, token, imeId, null)
+            } catch (e: NoSuchMethodException) {
+                val m: Method = InputMethodManager::class.java.getMethod(
+                    "setInputMethod", IBinder::class.java, String::class.java)
+                m.invoke(imm, token, imeId)
+            }
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         }
+    }
+
+    // AOSP 官方记录的切换方式: 写 Settings.Secure.DEFAULT_INPUT_METHOD。
+    // 需要 WRITE_SECURE_SETTINGS 权限, 仅 adb 可授予:
+    //   adb shell pm grant com.inputmethod.switcher android.permission.WRITE_SECURE_SETTINGS
+    private fun trySecureOrGuide(imeId: String) {
+        if (writeSecureSettings(imeId)) {
+            finish()
+            return
+        }
+        showAdbSetupDialog()
+    }
+
+    private fun writeSecureSettings(imeId: String): Boolean {
+        return try {
+            if (checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                Settings.Secure.putInt(contentResolver, "selected_input_method_subtype", -1)
+                Settings.Secure.putString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD, imeId)
+            } else {
+                false
+            }
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun currentImeId(imm: InputMethodManager): String? {
+        return try {
+            InputMethodManager::class.java.getMethod("getCurrentInputMethodId")
+                .invoke(imm) as? String
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    private fun showAdbSetupDialog() {
+        val adbCmd = "adb shell pm grant com.inputmethod.switcher android.permission.WRITE_SECURE_SETTINGS"
+        val msg = "这台设备的系统限制了普通应用直接切换输入法。\n\n" +
+            "请在电脑上连接手机(开启 USB 调试),执行以下命令授权一次,之后即可正常切换:\n\n" +
+            adbCmd
+        AlertDialog.Builder(this)
+            .setTitle("需要一次 adb 授权")
+            .setMessage(msg)
+            .setPositiveButton("复制命令") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("adb", adbCmd))
+                Toast.makeText(this, "命令已复制", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("打开输入法设置") { _, _ -> openSettings("正在打开输入法设置") }
+            .setOnDismissListener { finish() }
+            .show()
     }
 
     // 反射读取当前 IME 客户端的 token，setInputMethod* 需要它来匹配调用者
