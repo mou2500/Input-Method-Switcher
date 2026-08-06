@@ -109,7 +109,7 @@ class ImeProbeService : AccessibilityService() {
         if (list != null) {
             list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         } else {
-            performGlobalAction(AccessibilityService.GLOBAL_ACTION_SCROLL_FORWARD)
+            LogStore.log("[SCROLL] 窗口内无滚动容器，无法滚动")
         }
     }
 
