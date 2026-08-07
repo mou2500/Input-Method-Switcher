@@ -1,61 +1,57 @@
 # 输入法切换器 (Input Method Switcher)
 
-一个轻量级 Android 应用，点击图标直接弹出系统输入法选择器，选完自动关闭，无后台残留。
+一个轻量级 Android 应用：**点击图标 → 自动打开系统「更改键盘」浮窗 → 选择输入法后自动关闭**，不占用后台。
+
+## 解决的问题
+
+微信输入法、搜狗输入法等很多输入法没有内置「切换输入法」入口。平时切换输入法需要：退出当前界面 → 打开设置 → 系统与更新 → 输入法 → 当前输入法，非常繁琐。
+
+安装本应用后，只需点击桌面图标，系统「更改键盘」浮窗立即弹出，选择输入法即可，全程 1 秒。
+
+## 工作原理
+
+部分国产 ROM（如 OPPO ColorOS）会拦截第三方应用直接调用 `showInputMethodPicker()`（系统弹出「更改键盘」浮窗的 API）。本应用通过**无障碍服务**模拟用户点击，自动完成导航：
+
+```
+设置 → 系统与更新 → 输入法 → 当前输入法 → 「更改键盘」浮窗弹出
+```
+
+无障碍模拟点击等同于用户手指操作，系统无法拒绝，因此任何 ROM 上都能稳定弹出浮窗。
+
+## 安装使用
+
+1. 下载 [InputMethodSwitcher-1.0.apk](https://github.com/mou2500/Input-Method-Switcher/releases/latest) 并安装
+2. 首次使用：点击图标 → 按引导开启「无障碍服务」（一次性授权，之后无需再开）
+3. 点击桌面图标 → 自动打开系统「更改键盘」浮窗
+4. 选择输入法 → 完成，App 自动关闭
 
 ## 功能特点
 
-- 🚀 点开即弹出系统输入法切换浮窗
-- ⏱️ 选完输入法后 App 自动结束，不占用后台
-- 🪶 零依赖，APK 仅约 20-40KB
-- 🔒 不需要 Root、Shizuku 或任何权限
-- 🌙 自动支持亮色/暗色图标
-- 🎨 Android 13+ 支持 Material You 主题图标
+- 🚀 点击图标一键弹出「更改键盘」浮窗
+- ⏱️ 选择输入法后 App 自动结束，不占用后台
+- 🤖 自动滚动定位「系统与更新」（无需手动滚动）
+- 🔒 不需要 Root、Shizuku 或 adb 授权
+- 📱 兼容 OPPO/ColorOS、华为/鸿蒙等对第三方调用有限制的 ROM
 
-## 适用场景
+## 权限说明
 
-微信输入法、搜狗输入法等没有内置"切换输入法"入口时，点一下桌面图标即可弹出系统输入法选择器，无需退出当前界面去系统设置里切换。
-
-## 下载安装
-
-从 GitHub Actions 构建下载：
-1. 打开仓库 Actions 标签
-2. 选择最新的成功构建
-3. 下载 Artifacts 中的 `app-debug.zip`
-4. 解压得到 `InputMethodSwitcher-1.0.apk`
-5. 安装到手机，点击图标即可使用
-
-## 构建方式
-
-```bash
-# Debug 构建
-gradle assembleDebug
-```
-
-APK 输出位置：`app/build/outputs/apk/`
+仅请求 **无障碍服务** 权限（用于自动点击「当前输入法」），不请求网络、存储、定位等任何其他权限，不收集任何数据。
 
 ## 项目结构
 
 ```
-InputMethodSwitcher/
-├── app/
-│   └── src/main/
-│       ├── java/com/inputmethod/switcher/LauncherActivity.kt  # 核心逻辑
-│       ├── AndroidManifest.xml                                # 清单文件
-│       └── res/                                              # 资源文件
-└── gradle 配置文件
+app/src/main/
+├── java/com/inputmethod/switcher/
+│   ├── LauncherActivity.kt   # 入口：检查无障碍服务并触发导航
+│   └── ImeSwitchService.kt   # 无障碍导航状态机（含自动滚动）
+├── AndroidManifest.xml
+└── res/
 ```
 
-## 技术细节
+## 构建方式
 
-- **minSdk**: 26 (Android 8.0)
-- **targetSdk**: 35
-- **零外部依赖**：仅使用 Android 框架 API
-- **唤起方式**：`InputMethodManager.showInputMethodPicker()`（@hide API，通过反射调用）
-- **无界面**：`Theme.Translucent.NoTitleBar.Fullscreen` 透明主题，Activity 打开即 `finish()`
+GitHub Actions 自动构建，推送到 main 分支即触发。Release 页面提供 APK 直接下载。
 
-## 隐私安全
+## 版本历史
 
-- 不请求任何权限（无网络、无存储...）
-- 不收集任何个人信息
-- 只是一个"快捷方式"，点击后立即结束自己
-- 所有逻辑只有 40 多行代码，可直接查看
+- **v1.0**（2026-08）：正式版。无障碍自动导航调出「更改键盘」浮窗，支持自动滚动。
