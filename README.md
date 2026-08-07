@@ -20,7 +20,7 @@
 
 ## 安装使用
 
-1. 下载 [InputMethodSwitcher-1.0.apk](https://github.com/mou2500/Input-Method-Switcher/releases/latest) 并安装
+1. 下载 [InputMethodSwitcher-1.0.apk](https://github.com/mou2500/Input-Method-Switcher/releases/download/v1.0/InputMethodSwitcher-1.0.apk) 并安装
 2. 首次使用：点击图标 → 按引导开启「无障碍服务」（一次性授权，之后无需再开）
 3. 点击桌面图标 → 自动打开系统「更改键盘」浮窗
 4. 选择输入法 → 完成，App 自动关闭
